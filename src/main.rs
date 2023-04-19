@@ -1,3 +1,5 @@
+#![allow(clippy::needless_return)]
+
 use cursive::theme::{BorderStyle, Color, Palette, PaletteColor, Theme};
 use cursive::view::{Margins, Nameable, Resizable, Scrollable};
 use cursive::views::{LinearLayout, PaddedView, Panel, TextView};
