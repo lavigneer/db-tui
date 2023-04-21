@@ -2,9 +2,10 @@
 
 use cursive::theme::{BorderStyle, Color, Palette, PaletteColor, Theme};
 use cursive::view::{Margins, Nameable, Resizable, Scrollable};
-use cursive::views::{LinearLayout, PaddedView, Panel, TextView};
-use cursive::Cursive;
+use cursive::views::{DebugView, LinearLayout, PaddedView, Panel, TextView};
+use cursive::{CbSink, Cursive};
 use cursive_tree_view::{Placement, TreeView};
+use mongodb::bson::doc;
 use mongodb::Client;
 use std::env;
 use std::error::Error;
@@ -31,17 +32,34 @@ async fn create_database_tree_view(client: &Client) -> Result<TreeView<String>, 
     return Ok(tree);
 }
 
-fn view_database(siv: &mut Cursive, db: String) {
+async fn load_database_collection(
+    client: &Client,
+    db: String,
+    collection: String,
+    cb: &CbSink,
+) -> Result<(), Box<dyn Error + Send + Sync>> {
+    let stats = client
+        .database(&db)
+        .run_command(doc! {"collStats": &collection, "scale": 1024}, None)
+        .await?;
+    let size = stats.get_i32("size").unwrap();
+
+    cb.send(Box::new(move |siv| show_database(siv, &collection, size)))
+        .unwrap();
+    return Ok(());
+}
+
+fn show_database(siv: &mut Cursive, collection: &String, size: i32) {
     siv.call_on_name("database_view", |view: &mut LinearLayout| {
         view.clear();
-        view.add_child(TextView::new(db));
+        view.add_child(TextView::new(collection));
+        view.add_child(TextView::new(format!("{} KB", size)));
     });
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
     let args: Vec<String> = env::args().collect();
-    println!("{:?}", args);
     let mongo_uri = &args[1];
     let client = Client::with_uri_str(mongo_uri).await?;
 
@@ -56,7 +74,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
         borders: BorderStyle::Simple,
         palette,
     });
-
     let mut database_tree_view = create_database_tree_view(&client).await?;
     let mut database_tree_layout = LinearLayout::vertical();
     database_tree_layout.add_child(PaddedView::new(
@@ -68,15 +85,25 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         TextView::new("Databases"),
     ));
-    database_tree_view.set_on_submit(|siv: &mut Cursive, row| {
+    database_tree_view.set_on_submit(move |siv: &mut Cursive, row| {
+        let client = client.clone();
         let cb = siv.cb_sink().clone();
-        let value = siv
+        let (collection, db) = siv
             .call_on_name("db_tree", move |tree: &mut TreeView<String>| {
-                return tree.borrow_item(row).unwrap().to_string();
+                let collection = tree.borrow_item(row).unwrap().clone();
+                let db = tree
+                    .borrow_item(tree.item_parent(row).unwrap())
+                    .unwrap()
+                    .clone();
+                return (collection, db);
             })
             .unwrap();
 
-        cb.send(Box::new(|siv| view_database(siv, value))).unwrap();
+        tokio::task::spawn(async move {
+            load_database_collection(&client, db, collection, &cb)
+                .await
+                .unwrap();
+        });
     });
     database_tree_layout.add_child(database_tree_view.with_name("db_tree").scrollable());
 
