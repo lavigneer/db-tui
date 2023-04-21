@@ -2,7 +2,7 @@
 
 use cursive::theme::{BorderStyle, Color, Palette, PaletteColor, Theme};
 use cursive::view::{Margins, Nameable, Resizable, Scrollable};
-use cursive::views::{DebugView, LinearLayout, PaddedView, Panel, TextView};
+use cursive::views::{LinearLayout, PaddedView, Panel, TextView};
 use cursive::{CbSink, Cursive};
 use cursive_tree_view::{Placement, TreeView};
 use mongodb::bson::doc;
@@ -40,20 +40,84 @@ async fn load_database_collection(
 ) -> Result<(), Box<dyn Error + Send + Sync>> {
     let stats = client
         .database(&db)
-        .run_command(doc! {"collStats": &collection, "scale": 1024}, None)
+        .run_command(doc! {"collStats": &collection }, None)
         .await?;
-    let size = stats.get_i32("size").unwrap();
+    let storage_size = stats.get_i32("storageSize").unwrap();
+    let document_count = stats.get_i32("count").unwrap();
+    let avg_document_size = stats.get_i32("avgObjSize").unwrap();
+    let indexes_count = stats.get_i32("nindexes").unwrap();
+    let total_index_size = stats.get_i32("totalIndexSize").unwrap();
 
-    cb.send(Box::new(move |siv| show_database(siv, &collection, size)))
-        .unwrap();
+    cb.send(Box::new(move |siv| {
+        show_database(
+            siv,
+            &collection,
+            storage_size,
+            document_count,
+            avg_document_size,
+            indexes_count,
+            total_index_size,
+        )
+    }))
+    .unwrap();
     return Ok(());
 }
 
-fn show_database(siv: &mut Cursive, collection: &String, size: i32) {
+fn show_database(
+    siv: &mut Cursive,
+    collection: &String,
+    storage_size: i32,
+    document_count: i32,
+    avg_document_size: i32,
+    indexes_count: i32,
+    total_index_size: i32,
+) {
     siv.call_on_name("database_view", |view: &mut LinearLayout| {
         view.clear();
         view.add_child(TextView::new(collection));
-        view.add_child(TextView::new(format!("{} KB", size)));
+        let stats_view = LinearLayout::horizontal()
+            .child(PaddedView::lrtb(
+                0,
+                4,
+                0,
+                0,
+                LinearLayout::vertical()
+                    .child(TextView::new("Storage Size"))
+                    .child(TextView::new(format!("{} KB", storage_size / 1024))),
+            ))
+            .child(PaddedView::lrtb(
+                0,
+                4,
+                0,
+                0,
+                LinearLayout::vertical()
+                    .child(TextView::new("Documents"))
+                    .child(TextView::new(document_count.to_string())),
+            ))
+            .child(PaddedView::lrtb(
+                0,
+                4,
+                0,
+                0,
+                LinearLayout::vertical()
+                    .child(TextView::new("Avg Document Size"))
+                    .child(TextView::new(format!("{} KB", avg_document_size / 1024))),
+            ))
+            .child(PaddedView::lrtb(
+                0,
+                4,
+                0,
+                0,
+                LinearLayout::vertical()
+                    .child(TextView::new("Indexes"))
+                    .child(TextView::new(indexes_count.to_string())),
+            ))
+            .child(
+                LinearLayout::vertical()
+                    .child(TextView::new("Total Index Size"))
+                    .child(TextView::new(format!("{} KB", total_index_size / 1024))),
+            );
+        view.add_child(stats_view);
     });
 }
 
