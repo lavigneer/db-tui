@@ -6,7 +6,9 @@ use cursive::view::{Margins, Nameable, Resizable, Scrollable};
 use cursive::views::{LinearLayout, PaddedView, Panel, TextView};
 use cursive::{CbSink, Cursive};
 use cursive_tree_view::{Placement, TreeView};
-use mongodb::bson::doc;
+use futures::stream::TryStreamExt;
+use mongodb::bson::{doc, Document};
+use mongodb::options::FindOptions;
 use mongodb::Client;
 use std::env;
 use std::error::Error;
@@ -49,6 +51,13 @@ async fn load_database_collection(
     let indexes_count = stats.get_i32("nindexes").unwrap_or(0);
     let total_index_size = stats.get_i32("totalIndexSize").unwrap_or(0);
 
+    let coll = client.database(&db).collection::<Document>(&collection);
+
+    let documents_cursor = coll
+        .find(None, FindOptions::builder().limit(10).build())
+        .await?;
+    let documents: Vec<Document> = documents_cursor.try_collect().await?;
+
     cb.send(Box::new(move |siv| {
         show_database(
             siv,
@@ -58,6 +67,7 @@ async fn load_database_collection(
             avg_document_size,
             indexes_count,
             total_index_size,
+            documents,
         )
     }))
     .unwrap();
@@ -72,6 +82,7 @@ fn show_database(
     avg_document_size: i32,
     indexes_count: i32,
     total_index_size: i32,
+    documents: Vec<Document>,
 ) {
     siv.call_on_name("database_view", |view: &mut LinearLayout| {
         view.clear();
@@ -132,6 +143,17 @@ fn show_database(
                     .child(TextView::new(format!("{} KB", total_index_size / 1024))),
             );
         view.add_child(stats_view);
+
+        let mut document_list_view = LinearLayout::vertical();
+        documents.iter().for_each(|doc| {
+            let mut doc_tree_view = TreeView::new();
+            doc_tree_view.disable();
+            doc.iter().for_each(|(key, _value)| {
+                doc_tree_view.insert_item(key.clone(), Placement::After, 0);
+            });
+            document_list_view.add_child(Panel::new(PaddedView::lrtb(1, 1, 1, 1, doc_tree_view)));
+        });
+        view.add_child(document_list_view);
     });
 }
 

@@ -9,6 +9,7 @@ edition = "2021"
 mongodb = "2.4.0"
 tokio = "1.24.1"
 cursive_tree_view = "0.8.0"
+futures = "0.3.28"
 
 [dependencies.cursive]
 version = "0.20"
