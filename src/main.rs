@@ -7,7 +7,7 @@ use cursive::views::{LinearLayout, PaddedView, Panel, TextView};
 use cursive::{CbSink, Cursive};
 use cursive_tree_view::{Placement, TreeView};
 use futures::stream::TryStreamExt;
-use mongodb::bson::{doc, Document};
+use mongodb::bson::{doc, Bson, Document};
 use mongodb::options::FindOptions;
 use mongodb::Client;
 use std::env;
@@ -72,6 +72,38 @@ async fn load_database_collection(
     }))
     .unwrap();
     return Ok(());
+}
+
+fn build_document_tree(
+    tree: &mut TreeView<String>,
+    parent_row: Option<usize>,
+    field: (&String, &Bson),
+) {
+    let (key, value) = field;
+    let placement = match parent_row {
+        None => Placement::After,
+        _ => Placement::LastChild,
+    };
+    let parent_row = parent_row.unwrap_or(0);
+    let row = match value.to_owned() {
+        Bson::Array(val) => {
+            let row = tree.insert_item(format!("{}: Array", key), placement, parent_row);
+            val.iter().enumerate().for_each(|(index, arr_val)| {
+                build_document_tree(tree, row, (&index.to_string(), arr_val));
+            });
+            row
+        }
+        Bson::Document(val) => {
+            let row = tree.insert_item(format!("{}: Object", key), placement, parent_row);
+            val.iter()
+                .for_each(|field| build_document_tree(tree, row, field));
+            row
+        }
+        _ => tree.insert_item(format!("{}: {}", key, value), placement, parent_row),
+    };
+    if let Some(row) = row {
+        tree.collapse_item(row);
+    }
 }
 
 fn show_database(
@@ -146,11 +178,9 @@ fn show_database(
 
         let mut document_list_view = LinearLayout::vertical();
         documents.iter().for_each(|doc| {
-            let mut doc_tree_view = TreeView::new();
-            doc_tree_view.disable();
-            doc.iter().for_each(|(key, _value)| {
-                doc_tree_view.insert_item(key.clone(), Placement::After, 0);
-            });
+            let mut doc_tree_view = TreeView::<String>::new();
+            doc.iter()
+                .for_each(|field| build_document_tree(&mut doc_tree_view, None, field));
             document_list_view.add_child(Panel::new(PaddedView::lrtb(1, 1, 1, 1, doc_tree_view)));
         });
         view.add_child(document_list_view);
