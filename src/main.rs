@@ -1,39 +1,22 @@
-#![allow(clippy::needless_return)]
-
 use cursive::reexports::enumset::enum_set;
-use cursive::theme::{BorderStyle, Color, ColorStyle, Effect, Palette, PaletteColor, Style, Theme};
+use cursive::theme::{ColorStyle, Effect, Style};
 use cursive::view::{Margins, Nameable, Resizable, Scrollable};
 use cursive::views::{LinearLayout, PaddedView, Panel, TextView};
 use cursive::{CbSink, Cursive};
 use cursive_tree_view::{Placement, TreeView};
+use db_tree::{DbTreeItem, DbTreeView};
 use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, Bson, Document};
 use mongodb::options::FindOptions;
 use mongodb::Client;
 use std::env;
 use std::error::Error;
+use theme::create_theme;
 
 extern crate cursive_tree_view;
 
-async fn create_database_tree_view(client: &Client) -> Result<TreeView<String>, Box<dyn Error>> {
-    let databases = client.list_databases(None, None).await?;
-    let mut tree = TreeView::new();
-
-    for database in databases {
-        let db_row = tree.insert_item(database.name.clone(), Placement::After, 0);
-        match db_row {
-            None => (),
-            Some(row) => {
-                let database = client.database(&database.name);
-                let collection_names = database.list_collection_names(None).await?;
-                for collection_name in collection_names {
-                    tree.insert_item(collection_name, Placement::LastChild, row);
-                }
-            }
-        }
-    }
-    return Ok(tree);
-}
+mod db_tree;
+mod theme;
 
 async fn load_database_collection(
     client: &Client,
@@ -71,7 +54,7 @@ async fn load_database_collection(
         )
     }))
     .unwrap();
-    return Ok(());
+    Ok(())
 }
 
 fn build_document_tree(
@@ -195,16 +178,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // Creates the cursive root - required for every application.
     let mut siv = cursive::default();
-    let mut palette = Palette::default();
-    palette[PaletteColor::Background] = Color::TerminalDefault;
-    palette[PaletteColor::View] = Color::TerminalDefault;
-    palette[PaletteColor::Primary] = Color::TerminalDefault;
-    siv.set_theme(Theme {
-        shadow: false,
-        borders: BorderStyle::Simple,
-        palette,
-    });
-    let mut database_tree_view = create_database_tree_view(&client).await?;
+    siv.set_theme(create_theme());
+
+    let mut db_tree_view = DbTreeView::new(siv.cb_sink().clone(), client.clone());
+    db_tree_view.load_databases().await?;
     let mut database_tree_layout = LinearLayout::vertical();
     database_tree_layout.add_child(PaddedView::new(
         Margins {
@@ -215,27 +192,29 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         TextView::new("Databases"),
     ));
-    database_tree_view.set_on_submit(move |siv: &mut Cursive, row| {
-        let client = client.clone();
-        let cb = siv.cb_sink().clone();
-        let (collection, db) = siv
-            .call_on_name("db_tree", move |tree: &mut TreeView<String>| {
-                let collection = tree.borrow_item(row).unwrap().clone();
-                let db = tree
-                    .borrow_item(tree.item_parent(row).unwrap())
-                    .unwrap()
-                    .clone();
-                return (collection, db);
-            })
-            .unwrap();
+    db_tree_view
+        .tree_view
+        .get_mut()
+        .set_on_submit(move |siv: &mut Cursive, row| {
+            let client = client.clone();
+            let cb = siv.cb_sink().clone();
 
-        tokio::task::spawn(async move {
-            load_database_collection(&client, db, collection, &cb)
-                .await
-                .unwrap();
+            if let Some(DbTreeItem::CollectionItem(db, collection)) = siv
+                .find_name::<TreeView<DbTreeItem>>("db_tree")
+                .unwrap()
+                .borrow_item(row)
+            {
+                let db = db.clone();
+                let collection = collection.clone();
+                tokio::task::spawn(async move {
+                    load_database_collection(&client, db, collection, &cb)
+                        .await
+                        .unwrap();
+                });
+            }
         });
-    });
-    database_tree_layout.add_child(database_tree_view.with_name("db_tree").scrollable());
+    let database_tree_view = db_tree_view.tree_view;
+    database_tree_layout.add_child(database_tree_view.scrollable());
 
     let mut main_view = LinearLayout::horizontal();
     main_view.add_child(database_tree_layout);
@@ -246,5 +225,5 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // Starts the event loop.
     siv.run();
 
-    return Ok(());
+    Ok(())
 }
