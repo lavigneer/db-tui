@@ -1,7 +1,7 @@
 use cursive::reexports::enumset::enum_set;
 use cursive::theme::{ColorStyle, Effect, Style};
 use cursive::view::{Margins, Nameable, Resizable, Scrollable};
-use cursive::views::{LinearLayout, PaddedView, Panel, TextView};
+use cursive::views::{BoxedView, LinearLayout, PaddedView, Panel, TextView, ViewRef};
 use cursive::{CbSink, Cursive};
 use cursive_tree_view::{Placement, TreeView};
 use db_tree::{DbTreeItem, DbTreeView};
@@ -9,12 +9,14 @@ use futures::stream::TryStreamExt;
 use mongodb::bson::{doc, Bson, Document};
 use mongodb::options::FindOptions;
 use mongodb::Client;
+use owning_ref::{OwningHandle, RcRef};
 use std::env;
 use std::error::Error;
 use theme::create_theme;
 
 extern crate cursive_tree_view;
 
+mod collection_stats;
 mod db_tree;
 mod theme;
 
@@ -192,29 +194,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
         },
         TextView::new("Databases"),
     ));
-    db_tree_view
-        .tree_view
-        .get_mut()
-        .set_on_submit(move |siv: &mut Cursive, row| {
-            let client = client.clone();
-            let cb = siv.cb_sink().clone();
-
-            if let Some(DbTreeItem::CollectionItem(db, collection)) = siv
-                .find_name::<TreeView<DbTreeItem>>("db_tree")
-                .unwrap()
-                .borrow_item(row)
-            {
-                let db = db.clone();
-                let collection = collection.clone();
-                tokio::task::spawn(async move {
-                    load_database_collection(&client, db, collection, &cb)
-                        .await
-                        .unwrap();
-                });
-            }
+    db_tree_view.set_on_submit(move |siv: &mut Cursive, db, collection| {
+        let cb = siv.cb_sink().clone();
+        let client = client.clone();
+        tokio::task::spawn(async move {
+            load_database_collection(&client, db, collection, &cb)
+                .await
+                .unwrap();
         });
+    });
     let database_tree_view = db_tree_view.tree_view;
-    database_tree_layout.add_child(database_tree_view.scrollable());
+    database_tree_layout.add_child(OwningHandle::new_mut(database_tree_view));
 
     let mut main_view = LinearLayout::horizontal();
     main_view.add_child(database_tree_layout);
